@@ -45,7 +45,7 @@ class Diarizer:
         logger.info("Carregando pipeline pyannote/speaker-diarization-3.1...")
         self._pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token,
+            token=hf_token,
             cache_dir=str(MODELS_CACHE_DIR),
         )
 

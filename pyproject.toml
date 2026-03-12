@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "gravacao-transcricao"
@@ -23,7 +23,7 @@ dependencies = [
     "soundfile>=0.12.0",
 
     # Transcrição local
-    "qwen-asr>=0.1.0",
+    "qwen-asr>=0.0.5",
     "faster-whisper>=1.1.0",
     "torch>=2.0.0",
     "torchaudio>=2.0.0",

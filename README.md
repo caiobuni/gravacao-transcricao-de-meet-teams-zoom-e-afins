@@ -36,7 +36,7 @@ App desktop Windows para gravação automática e transcrição de reuniões do 
 
 ```bash
 # 1. Clonar o repositório
-git clone <repo-url>
+git clone https://github.com/caiobuni/gravacao-transcricao-de-meet-teams-zoom-e-afins.git
 cd gravacao-transcricao-de-meet-teams-zoom-e-afins
 
 # 2. Criar ambiente virtual
@@ -44,7 +44,7 @@ python -m venv .venv
 .venv\Scripts\activate
 
 # 3. Instalar PyTorch (com CUDA se tiver GPU)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 # Ou sem GPU:
 pip install torch torchaudio
 
