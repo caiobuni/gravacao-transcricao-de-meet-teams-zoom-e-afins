@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "gravacao-transcricao"
+version = "0.1.0"
+description = "App desktop para gravação e transcrição automática de reuniões (Meet, Teams, Zoom)"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    # System Tray + GUI
+    "pystray>=0.19.0",
+    "Pillow>=10.0.0",
+    "psutil>=5.9.0",
+    "customtkinter>=5.2.0",
+
+    # Áudio
+    "PyAudioWPatch>=0.2.12.6",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "soundfile>=0.12.0",
+
+    # Transcrição local
+    "qwen-asr>=0.1.0",
+    "faster-whisper>=1.1.0",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+
+    # Diarização
+    "pyannote.audio>=3.1.0",
+
+    # Detecção visual Meet
+    "mss>=9.0.0",
+    "opencv-python>=4.8.0",
+    "pytesseract>=0.3.10",
+
+    # API fallback
+    "groq>=0.11.0",
+
+    # Utilidades
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+gravacao-transcricao = "src.main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

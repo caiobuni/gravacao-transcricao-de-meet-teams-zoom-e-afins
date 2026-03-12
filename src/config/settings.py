@@ -1,0 +1,60 @@
+"""Configurações persistentes do aplicativo."""
+
+import json
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+
+from src.config.constants import CONFIG_FILE, TRANSCRIPTION_OUTPUT_DIR
+
+
+@dataclass
+class Settings:
+    """Configurações do usuário, persistidas em JSON."""
+
+    # Identidade
+    user_name: str = "Eu"
+
+    # Motor de transcrição: "qwen", "whisper", "groq"
+    transcription_engine: str = "qwen"
+
+    # Modelo Qwen3-ASR
+    qwen_model: str = "Qwen/Qwen3-ASR-0.6B"
+    qwen_aligner: str = "Qwen/Qwen3-ForcedAligner-0.6B"
+
+    # Modelo faster-whisper
+    whisper_model: str = "large-v3"
+    whisper_compute_type: str = "auto"  # auto, float16, int8
+
+    # Idioma
+    language: str = "pt"
+
+    # Caminhos
+    transcription_output_dir: str = str(TRANSCRIPTION_OUTPUT_DIR)
+
+    # Gravação
+    auto_delete_audio: bool = True
+
+    # Meet
+    auto_detect_meet: bool = True
+
+    # Voice profiles
+    voice_profiles: dict = field(default_factory=dict)
+
+    @classmethod
+    def load(cls) -> "Settings":
+        """Carrega configurações do arquivo JSON."""
+        if CONFIG_FILE.exists():
+            try:
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return cls()
+
+    def save(self) -> None:
+        """Salva configurações no arquivo JSON."""
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(
+            json.dumps(asdict(self), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )

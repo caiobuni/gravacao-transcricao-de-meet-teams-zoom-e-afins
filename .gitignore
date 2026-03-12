@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+qwen_asr_env/
+
+# Modelos ML (muito grandes para git)
+models/
+
+# Gravações temporárias
+recordings/
+
+# Dados persistentes locais
+data/
+
+# Logs
+log/
+
+# Ambiente
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
