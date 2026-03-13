@@ -10,7 +10,7 @@ from src.config.constants import WHISPER_SAMPLE_RATE
 
 
 def prepare_for_transcription(input_path: Path, output_path: Path | None = None) -> Path:
-    """Converte áudio para 16kHz mono float32 WAV (formato esperado pelo Whisper/Qwen)."""
+    """Converte áudio para 16kHz mono float32 WAV (formato esperado pelo Whisper)."""
     if output_path is None:
         output_path = input_path.with_stem(input_path.stem + "_16k")
 

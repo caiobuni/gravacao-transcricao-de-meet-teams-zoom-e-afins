@@ -46,9 +46,9 @@ class SettingsWindow:
         ctk.CTkLabel(self._window, text="Motor de transcricao:").grid(
             row=row, column=0, padx=10, pady=5, sticky="w"
         )
-        engine_options = ["Qwen3-ASR", "faster-whisper", "Groq API"]
-        engine_map = {"qwen": "Qwen3-ASR", "whisper": "faster-whisper", "groq": "Groq API"}
-        current_engine = engine_map.get(self._settings.transcription_engine, "Qwen3-ASR")
+        engine_options = ["faster-whisper", "Groq API"]
+        engine_map = {"whisper": "faster-whisper", "groq": "Groq API"}
+        current_engine = engine_map.get(self._settings.transcription_engine, "faster-whisper")
         self._engine_var = ctk.StringVar(value=current_engine)
         ctk.CTkOptionMenu(
             self._window,
@@ -118,6 +118,15 @@ class SettingsWindow:
             self._window,
             text="Detectar Google Meet automaticamente",
             variable=self._auto_detect_var,
+        ).grid(row=row, column=0, columnspan=2, padx=10, pady=0, sticky="w")
+        row += 1
+
+        # --- Start with Windows ---
+        self._start_with_windows_var = ctk.BooleanVar(value=self._settings.start_with_windows)
+        ctk.CTkCheckBox(
+            self._window,
+            text="Iniciar com o Windows",
+            variable=self._start_with_windows_var,
         ).grid(row=row, column=0, columnspan=2, padx=10, pady=(0, 15), sticky="w")
         row += 1
 
@@ -143,20 +152,24 @@ class SettingsWindow:
     def _save(self):
         # Map display name back to engine key
         engine_reverse = {
-            "Qwen3-ASR": "qwen",
             "faster-whisper": "whisper",
             "Groq API": "groq",
         }
 
         self._settings.user_name = self._user_name_var.get().strip() or "Eu"
         self._settings.transcription_engine = engine_reverse.get(
-            self._engine_var.get(), "qwen"
+            self._engine_var.get(), "whisper"
         )
         self._settings.whisper_model = self._whisper_model_var.get()
         self._settings.language = self._language_var.get()
         self._settings.transcription_output_dir = self._output_dir_var.get()
         self._settings.auto_delete_audio = self._auto_delete_var.get()
         self._settings.auto_detect_meet = self._auto_detect_var.get()
+        self._settings.start_with_windows = self._start_with_windows_var.get()
+
+        # Sincroniza registro do Windows
+        from src.utils.startup import set_startup
+        set_startup(self._settings.start_with_windows)
 
         self._settings.save()
         log.info("Configuracoes salvas")

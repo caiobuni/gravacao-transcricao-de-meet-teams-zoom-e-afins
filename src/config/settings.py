@@ -14,12 +14,8 @@ class Settings:
     # Identidade
     user_name: str = "Eu"
 
-    # Motor de transcrição: "qwen", "whisper", "groq"
-    transcription_engine: str = "qwen"
-
-    # Modelo Qwen3-ASR
-    qwen_model: str = "Qwen/Qwen3-ASR-0.6B"
-    qwen_aligner: str = "Qwen/Qwen3-ForcedAligner-0.6B"
+    # Motor de transcrição: "whisper", "groq"
+    transcription_engine: str = "whisper"
 
     # Modelo faster-whisper
     whisper_model: str = "large-v3"
@@ -36,6 +32,9 @@ class Settings:
 
     # Meet
     auto_detect_meet: bool = True
+
+    # Windows
+    start_with_windows: bool = True
 
     # Voice profiles
     voice_profiles: dict = field(default_factory=dict)

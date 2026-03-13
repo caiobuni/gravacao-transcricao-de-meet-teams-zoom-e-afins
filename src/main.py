@@ -9,6 +9,10 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# Carrega variáveis de ambiente do .env (HF_TOKEN, etc.)
+from dotenv import load_dotenv
+load_dotenv(project_root / ".env")
+
 from src.config.constants import LOG_DIR, RECORDINGS_DIR, DATA_DIR
 from src.config.settings import Settings
 from src.tray.tray_app import TrayApp
@@ -38,6 +42,11 @@ def main():
     log.info("Iniciando Gravacao e Transcricao v0.1.0")
 
     settings = Settings.load()
+
+    # Sincroniza auto-start com o registro do Windows
+    from src.utils.startup import set_startup
+    set_startup(settings.start_with_windows)
+
     app = TrayApp(settings)
 
     try:

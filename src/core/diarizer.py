@@ -83,11 +83,20 @@ class Diarizer:
         if max_speakers is not None:
             kwargs["max_speakers"] = max_speakers
 
-        logger.info("Executando diarização em %s...", audio_path)
-        diarization = self._pipeline(str(audio_path), **kwargs)
+        # Carrega áudio via torchaudio (soundfile backend) para evitar
+        # torchcodec que falha no Windows por não encontrar DLLs do FFmpeg.
+        import torchaudio
+        logger.info("Carregando áudio %s via torchaudio...", audio_path)
+        waveform, sample_rate = torchaudio.load(str(audio_path))
+
+        logger.info("Executando diarização (%d amostras, %d Hz)...", waveform.shape[1], sample_rate)
+        result = self._pipeline({"waveform": waveform, "sample_rate": sample_rate}, **kwargs)
+
+        # pyannote 4.x retorna DiarizeOutput; extrair Annotation via .speaker_diarization
+        annotation = getattr(result, "speaker_diarization", result)
 
         segments: list[DiarizationSegment] = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             segments.append(
                 DiarizationSegment(
                     start=turn.start,

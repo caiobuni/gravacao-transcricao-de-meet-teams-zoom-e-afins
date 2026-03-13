@@ -10,22 +10,6 @@ sys.path.insert(0, str(project_root))
 from src.config.constants import MODELS_DIR
 
 
-def download_qwen_asr():
-    print("=== Downloading Qwen3-ASR-0.6B ===")
-    try:
-        from huggingface_hub import snapshot_download
-        snapshot_download("Qwen/Qwen3-ASR-0.6B", local_dir=MODELS_DIR / "qwen" / "Qwen3-ASR-0.6B")
-        print("Qwen3-ASR-0.6B downloaded.")
-
-        print("=== Downloading Qwen3-ForcedAligner-0.6B ===")
-        snapshot_download("Qwen/Qwen3-ForcedAligner-0.6B", local_dir=MODELS_DIR / "qwen" / "Qwen3-ForcedAligner-0.6B")
-        print("Qwen3-ForcedAligner-0.6B downloaded.")
-    except ImportError:
-        print("huggingface_hub not installed. Run: pip install huggingface_hub")
-    except Exception as e:
-        print(f"Error downloading Qwen3-ASR: {e}")
-
-
 def download_whisper():
     print("\n=== Downloading faster-whisper large-v3 ===")
     try:
@@ -69,7 +53,6 @@ def main():
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    download_qwen_asr()
     download_whisper()
     download_pyannote()
 

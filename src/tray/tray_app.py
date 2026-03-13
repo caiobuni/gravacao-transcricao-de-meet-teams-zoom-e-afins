@@ -12,7 +12,7 @@ import pystray
 
 from src.config.constants import LOG_FILE, TRANSCRIPTION_OUTPUT_DIR
 from src.config.settings import Settings
-from src.core.pipeline import Pipeline, PipelineStage
+from src.core.pipeline import Pipeline, PipelineStage, PROCESSING_STAGES
 from src.core.process_monitor import MeetProcessMonitor
 from src.core.meet_detector import MeetSoundDetector
 from src.utils.logger import RecordingLogger
@@ -34,6 +34,7 @@ class TrayApp:
         self._pipeline.on_stage_change = self._on_stage_change
         self._pipeline.on_complete = self._on_complete
         self._pipeline.on_error = self._on_error
+        self._pipeline.on_queue_change = self._on_queue_change
 
         if settings.auto_detect_meet:
             self._process_monitor.on_meet_opened = self._on_meet_opened
@@ -49,6 +50,7 @@ class TrayApp:
             "gray": (128, 128, 128, 255),
             "red": (220, 50, 50, 255),
             "yellow": (220, 180, 50, 255),
+            "green": (50, 180, 50, 255),
         }
         fill = colors.get(color, colors["gray"])
         draw.ellipse([4, 4, size - 4, size - 4], fill=fill, outline=(255, 255, 255, 200), width=2)
@@ -56,13 +58,40 @@ class TrayApp:
 
     def _build_menu(self) -> pystray.Menu:
         is_rec = self._pipeline.is_recording
+        is_paused = self._pipeline.is_paused
+        stats = self._pipeline.task_queue.get_stats()
+        pending = stats["pending"]
+        in_progress = stats["in_progress"]
+
+        # Dynamic pause/resume
+        if is_paused:
+            pause_label = "Retomar Processamento"
+            pause_action = self._resume_processing
+        else:
+            pause_label = "Pausar Processamento"
+            pause_action = self._pause_processing
+
+        # Queue status text
+        queue_parts = []
+        if in_progress:
+            queue_parts.append("1 processando")
+        if pending:
+            queue_parts.append(f"{pending} pendente(s)")
+        queue_text = f"Fila: {', '.join(queue_parts)}" if queue_parts else "Fila: vazia"
+
+        has_work = pending > 0 or in_progress > 0
+
         return pystray.Menu(
             pystray.MenuItem("Iniciar Gravacao", self._start_recording, enabled=not is_rec),
             pystray.MenuItem("Parar Gravacao", self._stop_recording, enabled=is_rec),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(pause_label, pause_action, enabled=has_work or is_paused),
+            pystray.MenuItem(queue_text, None, enabled=False),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(f"Status: {self._status_text}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Ultima transcricao", self._open_last_transcription),
+            pystray.MenuItem("Ver fila de tarefas", self._open_task_queue),
             pystray.MenuItem("Abrir pasta de transcricoes", self._open_transcription_folder),
             pystray.MenuItem("Abrir log", self._open_log),
             pystray.Menu.SEPARATOR,
@@ -74,20 +103,31 @@ class TrayApp:
         if not self._icon:
             return
         stage = self._pipeline.stage
+
         if stage == PipelineStage.RECORDING:
-            self._icon.icon = self._create_icon_image("red")
-        elif stage in (PipelineStage.IDLE, PipelineStage.COMPLETE):
-            self._icon.icon = self._create_icon_image("gray")
+            color = "red"
+        elif stage == PipelineStage.PAUSED:
+            color = "yellow"
+        elif stage in PROCESSING_STAGES or stage == PipelineStage.QUEUED:
+            color = "green"
         else:
-            self._icon.icon = self._create_icon_image("yellow")
+            color = "gray"
+
+        self._icon.icon = self._create_icon_image(color)
         self._icon.menu = self._build_menu()
-        # Update tooltip
+
+        # Tooltip
         if self._pipeline.is_recording:
             from src.utils.audio_utils import format_duration
             elapsed = format_duration(self._pipeline.elapsed_seconds)
             self._icon.title = f"Gravacao em andamento: {elapsed}"
         else:
-            self._icon.title = f"Gravacao e Transcricao — {self._status_text}"
+            stats = self._pipeline.task_queue.get_stats()
+            pending = stats["pending"]
+            if pending > 0:
+                self._icon.title = f"Gravacao e Transcricao — {self._status_text} (Fila: {pending})"
+            else:
+                self._icon.title = f"Gravacao e Transcricao — {self._status_text}"
 
     def _on_stage_change(self, stage: PipelineStage):
         self._status_text = stage.value
@@ -96,7 +136,6 @@ class TrayApp:
     def _on_complete(self, output_path: Path):
         self._status_text = f"Concluido: {output_path.name}"
         self._update_icon()
-        # Windows toast notification
         try:
             from plyer import notification
             notification.notify(
@@ -105,10 +144,13 @@ class TrayApp:
                 timeout=5,
             )
         except Exception:
-            pass  # plyer not installed, skip notification
+            pass
 
     def _on_error(self, error: str):
         self._status_text = f"Erro: {error[:50]}"
+        self._update_icon()
+
+    def _on_queue_change(self):
         self._update_icon()
 
     def _start_recording(self, icon=None, item=None):
@@ -123,12 +165,29 @@ class TrayApp:
         except Exception as e:
             log.error(f"Erro ao parar gravacao: {e}")
 
+    def _pause_processing(self, icon=None, item=None):
+        self._pipeline.pause_processing()
+        self._status_text = "Pausado"
+        self._update_icon()
+
+    def _resume_processing(self, icon=None, item=None):
+        self._pipeline.resume_processing()
+        self._status_text = "Retomando..."
+        self._update_icon()
+
     def _open_last_transcription(self, icon=None, item=None):
         last = self._rec_logger.get_last_transcription_path()
         if last and last.exists():
             os.startfile(str(last))
         else:
             log.info("Nenhuma transcricao recente encontrada")
+
+    def _open_task_queue(self, icon=None, item=None):
+        import tempfile
+        md = self._pipeline.task_queue.to_markdown()
+        tmp = Path(tempfile.gettempdir()) / "fila_tarefas.md"
+        tmp.write_text(md, encoding="utf-8")
+        os.startfile(str(tmp))
 
     def _open_transcription_folder(self, icon=None, item=None):
         folder = Path(self._settings.transcription_output_dir)
@@ -141,7 +200,6 @@ class TrayApp:
 
     def _open_settings(self, icon=None, item=None):
         log.info("Configuracoes (a implementar)")
-        # Will be wired to settings_window.py later
 
     def _quit(self, icon=None, item=None):
         log.info("Encerrando aplicativo")
@@ -153,9 +211,6 @@ class TrayApp:
 
     def _on_meet_opened(self):
         log.info("Meet detectado — ativando modo escuta")
-        # Start listening for join/leave sounds via audio
-        # The sound detector needs to be fed audio data from the loopback
-        # This will be done by starting a lightweight listen-only capture
 
     def _on_meeting_joined(self):
         log.info("Reuniao iniciada (som detectado) — iniciando gravacao")
@@ -169,7 +224,6 @@ class TrayApp:
 
     def run(self):
         """Start the system tray application."""
-        # Start monitors
         if self._settings.auto_detect_meet:
             self._process_monitor.start()
 
@@ -181,4 +235,4 @@ class TrayApp:
         )
 
         log.info("App iniciado no System Tray")
-        self._icon.run()  # This blocks
+        self._icon.run()

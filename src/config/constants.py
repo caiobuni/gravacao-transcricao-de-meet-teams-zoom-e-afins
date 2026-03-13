@@ -19,6 +19,7 @@ LOG_FILE = LOG_DIR / "gravacoes.log"
 
 # Arquivo de configuração do usuário
 CONFIG_FILE = DATA_DIR / "config.json"
+TASK_QUEUE_FILE = DATA_DIR / "task_queue.json"
 
 # Áudio
 WHISPER_SAMPLE_RATE = 16000
@@ -35,7 +36,6 @@ GROQ_CHUNK_DURATION_SECONDS = 900  # 15 minutos por chunk
 
 # Transcrição
 DEFAULT_LANGUAGE = "pt"
-QWEN_LANGUAGE = "Portuguese"
 DEFAULT_BEAM_SIZE = 5
 
 # Meet
