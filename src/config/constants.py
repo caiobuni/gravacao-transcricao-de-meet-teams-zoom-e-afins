@@ -5,6 +5,7 @@ from pathlib import Path
 # Diretórios
 APP_DIR = Path(__file__).resolve().parent.parent.parent
 RECORDINGS_DIR = APP_DIR / "recordings"
+VEXA_RECORDINGS_DIR = RECORDINGS_DIR / "vexa"
 LOG_DIR = APP_DIR / "log"
 MODELS_DIR = APP_DIR / "models"
 DATA_DIR = APP_DIR / "data"

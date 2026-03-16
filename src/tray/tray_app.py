@@ -58,6 +58,7 @@ class TrayApp:
 
     def _build_menu(self) -> pystray.Menu:
         is_rec = self._pipeline.is_recording
+        is_vexa = self._pipeline.is_vexa_active
         is_paused = self._pipeline.is_paused
         stats = self._pipeline.task_queue.get_stats()
         pending = stats["pending"]
@@ -81,9 +82,21 @@ class TrayApp:
 
         has_work = pending > 0 or in_progress > 0
 
+        # Vexa bot label
+        if is_vexa:
+            vexa_label = "Parar bot Vexa"
+            vexa_action = self._stop_vexa_bot
+            vexa_enabled = True
+        else:
+            vexa_label = "Enviar bot para reuniao"
+            vexa_action = self._start_vexa_bot
+            vexa_enabled = not is_rec
+
         return pystray.Menu(
-            pystray.MenuItem("Iniciar Gravacao", self._start_recording, enabled=not is_rec),
+            pystray.MenuItem("Iniciar Gravacao", self._start_recording, enabled=not is_rec and not is_vexa),
             pystray.MenuItem("Parar Gravacao", self._stop_recording, enabled=is_rec),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(vexa_label, vexa_action, enabled=vexa_enabled),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(pause_label, pause_action, enabled=has_work or is_paused),
             pystray.MenuItem(queue_text, None, enabled=False),
@@ -93,6 +106,7 @@ class TrayApp:
             pystray.MenuItem("Ultima transcricao", self._open_last_transcription),
             pystray.MenuItem("Ver fila de tarefas", self._open_task_queue),
             pystray.MenuItem("Abrir pasta de transcricoes", self._open_transcription_folder),
+            pystray.MenuItem("Transcrever audio anterior", self._open_recordings),
             pystray.MenuItem("Abrir log", self._open_log),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Configuracoes", self._open_settings),
@@ -106,6 +120,8 @@ class TrayApp:
 
         if stage == PipelineStage.RECORDING:
             color = "red"
+        elif stage in (PipelineStage.VEXA_WAITING, PipelineStage.VEXA_RECORDING):
+            color = "red"
         elif stage == PipelineStage.PAUSED:
             color = "yellow"
         elif stage in PROCESSING_STAGES or stage == PipelineStage.QUEUED:
@@ -117,7 +133,9 @@ class TrayApp:
         self._icon.menu = self._build_menu()
 
         # Tooltip
-        if self._pipeline.is_recording:
+        if self._pipeline.is_vexa_active:
+            self._icon.title = f"Vexa: {self._status_text}"
+        elif self._pipeline.is_recording:
             from src.utils.audio_utils import format_duration
             elapsed = format_duration(self._pipeline.elapsed_seconds)
             self._icon.title = f"Gravacao em andamento: {elapsed}"
@@ -165,6 +183,37 @@ class TrayApp:
         except Exception as e:
             log.error(f"Erro ao parar gravacao: {e}")
 
+    def _start_vexa_bot(self, icon=None, item=None):
+        """Abre dialog para colar URL e envia bot Vexa."""
+        def _ask_url():
+            import customtkinter as ctk
+            dialog = ctk.CTkInputDialog(
+                text="Cole a URL da reuniao (Meet, Teams ou Zoom):",
+                title="Enviar bot Vexa",
+            )
+            url = dialog.get_input()
+            if url and url.strip():
+                try:
+                    self._pipeline.start_vexa_bot(url.strip())
+                except Exception as e:
+                    log.error("Erro ao enviar bot Vexa: %s", e)
+                    self._status_text = f"Erro Vexa: {str(e)[:40]}"
+                    self._update_icon()
+
+        threading.Thread(target=_ask_url, daemon=True).start()
+
+    def _stop_vexa_bot(self, icon=None, item=None):
+        """Para o bot Vexa e enfileira transcricao."""
+        def _stop():
+            try:
+                self._pipeline.stop_vexa_bot()
+            except Exception as e:
+                log.error("Erro ao parar bot Vexa: %s", e)
+                self._status_text = f"Erro Vexa: {str(e)[:40]}"
+                self._update_icon()
+
+        threading.Thread(target=_stop, daemon=True).start()
+
     def _pause_processing(self, icon=None, item=None):
         self._pipeline.pause_processing()
         self._status_text = "Pausado"
@@ -193,6 +242,15 @@ class TrayApp:
         folder = Path(self._settings.transcription_output_dir)
         folder.mkdir(parents=True, exist_ok=True)
         os.startfile(str(folder))
+
+    def _open_recordings(self, icon=None, item=None):
+        """Abre janela para selecionar gravacao e transcrever localmente."""
+        def _show():
+            from src.gui.recordings_window import RecordingsWindow
+            win = RecordingsWindow(on_transcribe=self._pipeline.enqueue_manual_transcription)
+            win.show()
+
+        threading.Thread(target=_show, daemon=True).start()
 
     def _open_log(self, icon=None, item=None):
         if LOG_FILE.exists():

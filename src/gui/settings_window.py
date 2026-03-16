@@ -24,7 +24,7 @@ class SettingsWindow:
 
         self._window = ctk.CTkToplevel()
         self._window.title("Configuracoes — Gravacao e Transcricao")
-        self._window.geometry("500x550")
+        self._window.geometry("500x740")
         self._window.resizable(False, False)
 
         # Configure grid weights for the main window
@@ -127,6 +127,59 @@ class SettingsWindow:
             self._window,
             text="Iniciar com o Windows",
             variable=self._start_with_windows_var,
+        ).grid(row=row, column=0, columnspan=2, padx=10, pady=0, sticky="w")
+        row += 1
+
+        # --- Vexa Section ---
+        ctk.CTkLabel(
+            self._window, text="Vexa (bot para reunioes)",
+            font=ctk.CTkFont(weight="bold"),
+        ).grid(row=row, column=0, columnspan=2, padx=10, pady=(15, 5), sticky="w")
+        row += 1
+
+        ctk.CTkLabel(self._window, text="API Key Vexa:").grid(
+            row=row, column=0, padx=10, pady=5, sticky="w"
+        )
+        import os
+        vexa_key = self._settings.vexa_api_key or os.environ.get("VEXA_API_KEY", "")
+        self._vexa_api_key_var = ctk.StringVar(value=vexa_key)
+        ctk.CTkEntry(self._window, textvariable=self._vexa_api_key_var, width=300, show="*").grid(
+            row=row, column=1, padx=10, pady=5, sticky="ew"
+        )
+        row += 1
+
+        ctk.CTkLabel(self._window, text="URL da API:").grid(
+            row=row, column=0, padx=10, pady=5, sticky="w"
+        )
+        self._vexa_url_var = ctk.StringVar(value=self._settings.vexa_base_url)
+        ctk.CTkEntry(self._window, textvariable=self._vexa_url_var, width=300).grid(
+            row=row, column=1, padx=10, pady=5, sticky="ew"
+        )
+        row += 1
+
+        ctk.CTkLabel(self._window, text="Nome do bot:").grid(
+            row=row, column=0, padx=10, pady=5, sticky="w"
+        )
+        self._vexa_bot_name_var = ctk.StringVar(value=self._settings.vexa_bot_name)
+        ctk.CTkEntry(self._window, textvariable=self._vexa_bot_name_var, width=300).grid(
+            row=row, column=1, padx=10, pady=5, sticky="ew"
+        )
+        row += 1
+
+        ctk.CTkLabel(self._window, text="Imagem do bot:").grid(
+            row=row, column=0, padx=10, pady=5, sticky="w"
+        )
+        self._vexa_bot_image_var = ctk.StringVar(value=self._settings.vexa_bot_image)
+        ctk.CTkEntry(self._window, textvariable=self._vexa_bot_image_var, width=300).grid(
+            row=row, column=1, padx=10, pady=5, sticky="ew"
+        )
+        row += 1
+
+        self._vexa_download_var = ctk.BooleanVar(value=self._settings.vexa_auto_download)
+        ctk.CTkCheckBox(
+            self._window,
+            text="Baixar audio do Vexa automaticamente",
+            variable=self._vexa_download_var,
         ).grid(row=row, column=0, columnspan=2, padx=10, pady=(0, 15), sticky="w")
         row += 1
 
@@ -166,6 +219,11 @@ class SettingsWindow:
         self._settings.auto_delete_audio = self._auto_delete_var.get()
         self._settings.auto_detect_meet = self._auto_detect_var.get()
         self._settings.start_with_windows = self._start_with_windows_var.get()
+        self._settings.vexa_api_key = self._vexa_api_key_var.get().strip()
+        self._settings.vexa_base_url = self._vexa_url_var.get().strip() or "https://api.vexa.ai"
+        self._settings.vexa_bot_name = self._vexa_bot_name_var.get().strip() or "Caio: bot de transcrição"
+        self._settings.vexa_bot_image = self._vexa_bot_image_var.get().strip()
+        self._settings.vexa_auto_download = self._vexa_download_var.get()
 
         # Sincroniza registro do Windows
         from src.utils.startup import set_startup

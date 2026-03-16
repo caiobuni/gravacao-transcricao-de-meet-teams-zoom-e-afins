@@ -35,6 +35,11 @@ class TranscriptionTask:
     output_path: str = ""
     current_stage: str = ""
     retry_count: int = 0
+    # Vexa fields
+    source: str = "loopback"          # "loopback" ou "vexa"
+    vexa_meeting_id: str = ""
+    vexa_platform: str = ""
+    vexa_transcript_json: str = ""    # JSON serializado dos segmentos do Vexa
 
     def __post_init__(self):
         if not self.created_at:
@@ -93,6 +98,54 @@ class TaskQueue:
         log.info("Tarefa adicionada: %s (%.0fs)", task.id, duration)
         return task
 
+    def add_vexa_task(
+        self,
+        platform: str,
+        meeting_id: str,
+        start_time: datetime,
+        duration: float,
+        vexa_transcript_json: str,
+        audio_path: Path | None = None,
+    ) -> TranscriptionTask:
+        """Adiciona tarefa originada do Vexa."""
+        task = TranscriptionTask(
+            id=uuid.uuid4().hex[:12],
+            speakers_path=str(audio_path) if audio_path else "",
+            mic_path="",
+            start_time=start_time.isoformat(),
+            duration=duration,
+            source="vexa",
+            vexa_meeting_id=meeting_id,
+            vexa_platform=platform,
+            vexa_transcript_json=vexa_transcript_json,
+        )
+        with self._lock:
+            self._tasks.append(task)
+            self._save()
+        log.info("Tarefa Vexa adicionada: %s (%s/%s)", task.id, platform, meeting_id)
+        return task
+
+    def add_manual_task(
+        self,
+        audio_path: Path,
+        start_time: datetime,
+        duration: float,
+    ) -> TranscriptionTask:
+        """Adiciona tarefa de transcricao manual (single-track)."""
+        task = TranscriptionTask(
+            id=uuid.uuid4().hex[:12],
+            speakers_path=str(audio_path),
+            mic_path="",
+            start_time=start_time.isoformat(),
+            duration=duration,
+            source="manual",
+        )
+        with self._lock:
+            self._tasks.append(task)
+            self._save()
+        log.info("Tarefa manual adicionada: %s (%s)", task.id, audio_path.name)
+        return task
+
     def get_next_pending(self) -> TranscriptionTask | None:
         with self._lock:
             for t in self._tasks:
@@ -145,6 +198,17 @@ class TaskQueue:
         with self._lock:
             for t in self._tasks:
                 if t.status == TaskStatus.PENDING.value:
+                    # Tarefas Vexa com transcricao ja pronta nao precisam de audio
+                    if t.source == "vexa" and t.vexa_transcript_json:
+                        continue
+                    # Tarefas manuais so precisam do speakers_path
+                    if t.source == "manual":
+                        if not t.speakers_path or not Path(t.speakers_path).exists():
+                            missing.append(t.id)
+                            t.status = TaskStatus.FAILED.value
+                            t.error = "Arquivo de audio nao encontrado"
+                            t.updated_at = datetime.now().isoformat()
+                        continue
                     if not Path(t.speakers_path).exists() or not Path(t.mic_path).exists():
                         missing.append(t.id)
                         t.status = TaskStatus.FAILED.value
@@ -212,10 +276,11 @@ class TaskQueue:
                 emoji = status_emoji.get(t.status, "\u2753")
                 dt = t.start_time[:16].replace("T", " ")
                 dur_min = t.duration / 60
+                source_tag = " [Vexa]" if t.source == "vexa" else ""
                 stage = f" \u2014 {t.current_stage}" if t.current_stage else ""
                 error = f" \u2014 Erro: {t.error}" if t.error else ""
                 output = f" \u2014 [{Path(t.output_path).name}]" if t.output_path else ""
                 lines.append(
-                    f"- {emoji} **{dt}** ({dur_min:.0f}min) \u2014 {t.status}{stage}{error}{output}"
+                    f"- {emoji} **{dt}** ({dur_min:.0f}min){source_tag} \u2014 {t.status}{stage}{error}{output}"
                 )
         return "\n".join(lines)

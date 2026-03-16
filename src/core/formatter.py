@@ -126,7 +126,10 @@ def to_markdown(
     lines.append("---")
     lines.append("")
     lines.append("*Transcrição gerada automaticamente por gravacao-transcricao*")
-    lines.append(f"*Motor: {engine_name} | Diarização: pyannote 3.1*")
+    if engine_name == "Vexa":
+        lines.append(f"*Motor: {engine_name} | Identificacao: participantes reais*")
+    else:
+        lines.append(f"*Motor: {engine_name} | Diarização: pyannote 3.1*")
     lines.append("")
 
     return "\n".join(lines)
