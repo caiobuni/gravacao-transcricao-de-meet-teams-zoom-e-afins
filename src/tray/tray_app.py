@@ -38,6 +38,7 @@ class TrayApp:
 
         if settings.auto_detect_meet:
             self._process_monitor.on_meet_opened = self._on_meet_opened
+            self._process_monitor.on_meet_closed = self._on_meet_closed
             self._sound_detector.on_meeting_joined = self._on_meeting_joined
             self._sound_detector.on_meeting_left = self._on_meeting_left
 
@@ -133,7 +134,9 @@ class TrayApp:
         self._icon.menu = self._build_menu()
 
         # Tooltip
-        if self._pipeline.is_vexa_active:
+        if self._pipeline.is_vexa_active and self._pipeline.is_recording:
+            self._icon.title = f"Vexa + Gravacao: {self._status_text}"
+        elif self._pipeline.is_vexa_active:
             self._icon.title = f"Vexa: {self._status_text}"
         elif self._pipeline.is_recording:
             from src.utils.audio_utils import format_duration
@@ -185,22 +188,25 @@ class TrayApp:
 
     def _start_vexa_bot(self, icon=None, item=None):
         """Abre dialog para colar URL e envia bot Vexa."""
-        def _ask_url():
-            import customtkinter as ctk
-            dialog = ctk.CTkInputDialog(
-                text="Cole a URL da reuniao (Meet, Teams ou Zoom):",
-                title="Enviar bot Vexa",
-            )
-            url = dialog.get_input()
-            if url and url.strip():
+        from src.gui.tk_root import run_on_tk
+        run_on_tk(self._show_vexa_dialog)
+
+    def _show_vexa_dialog(self):
+        import customtkinter as ctk
+        dialog = ctk.CTkInputDialog(
+            text="Cole a URL da reuniao (Meet, Teams ou Zoom):",
+            title="Enviar bot Vexa",
+        )
+        url = dialog.get_input()
+        if url and url.strip():
+            def _send():
                 try:
                     self._pipeline.start_vexa_bot(url.strip())
                 except Exception as e:
                     log.error("Erro ao enviar bot Vexa: %s", e)
                     self._status_text = f"Erro Vexa: {str(e)[:40]}"
                     self._update_icon()
-
-        threading.Thread(target=_ask_url, daemon=True).start()
+            threading.Thread(target=_send, daemon=True).start()
 
     def _stop_vexa_bot(self, icon=None, item=None):
         """Para o bot Vexa e enfileira transcricao."""
@@ -245,12 +251,14 @@ class TrayApp:
 
     def _open_recordings(self, icon=None, item=None):
         """Abre janela para selecionar gravacao e transcrever localmente."""
+        from src.gui.tk_root import run_on_tk
+
         def _show():
             from src.gui.recordings_window import RecordingsWindow
             win = RecordingsWindow(on_transcribe=self._pipeline.enqueue_manual_transcription)
             win.show()
 
-        threading.Thread(target=_show, daemon=True).start()
+        run_on_tk(_show)
 
     def _open_log(self, icon=None, item=None):
         if LOG_FILE.exists():
@@ -270,6 +278,15 @@ class TrayApp:
     def _on_meet_opened(self):
         log.info("Meet detectado — ativando modo escuta")
 
+    def _on_meet_closed(self):
+        """Meet fechado — para gravacao/bot Vexa (modo hibrido para ambos)."""
+        log.info("Google Meet encerrado — verificando gravacao ativa")
+        if self._pipeline.is_vexa_active:
+            # Modo hibrido: stop_vexa_bot() ja para a gravacao local tambem
+            threading.Thread(target=self._pipeline.stop_vexa_bot, daemon=True).start()
+        elif self._pipeline.is_recording:
+            self._pipeline.stop_recording()
+
     def _on_meeting_joined(self):
         log.info("Reuniao iniciada (som detectado) — iniciando gravacao")
         if not self._pipeline.is_recording:
@@ -277,7 +294,9 @@ class TrayApp:
 
     def _on_meeting_left(self):
         log.info("Reuniao encerrada (som detectado) — parando gravacao")
-        if self._pipeline.is_recording:
+        if self._pipeline.is_vexa_active:
+            threading.Thread(target=self._pipeline.stop_vexa_bot, daemon=True).start()
+        elif self._pipeline.is_recording:
             self._pipeline.stop_recording()
 
     def run(self):

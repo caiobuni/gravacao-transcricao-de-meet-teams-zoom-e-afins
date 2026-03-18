@@ -1,12 +1,13 @@
 import logging
 import os
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from src.config.constants import RECORDINGS_DIR, VEXA_RECORDINGS_DIR, TRANSCRIPTION_OUTPUT_DIR
+from src.config.constants import RECORDINGS_DIR, TRANSCRIPTION_OUTPUT_DIR
 from src.config.settings import Settings
 from src.core.audio_capture import DualTrackCapture
 from src.core.audio_preprocessing import prepare_for_transcription
@@ -196,14 +197,38 @@ class Pipeline:
         self._set_stage(PipelineStage.VEXA_RECORDING)
         log.info("Bot Vexa enviado: %s/%s", info.platform, info.meeting_id)
 
+        # Inicia gravacao local junto com Vexa (modo hibrido)
+        self._vexa_rec_start = None
+        if not self._capture.is_recording:
+            if not self._paused and self.is_processing:
+                self._auto_paused = True
+                self._run_event.clear()
+                log.info("Processamento auto-pausado para gravacao hibrida")
+            speakers_path, mic_path = self._capture.start()
+            self._rec_speakers = speakers_path
+            self._rec_mic = mic_path
+            self._vexa_rec_start = datetime.now()
+            log.info("Gravacao local iniciada junto com Vexa: %s", speakers_path)
+
+        # Inicia polling de status do bot
+        self._vexa_poll_thread = threading.Thread(
+            target=self._poll_vexa_status, daemon=True, name="vexa-poll"
+        )
+        self._vexa_poll_thread.start()
+
     def stop_vexa_bot(self):
-        """Para o bot Vexa e enfileira transcricao."""
+        """Para o bot Vexa e enfileira transcricao. Idempotente."""
         if not self._vexa_active:
             return
 
-        client = self._get_vexa_client()
+        # Marca inativo imediatamente (evita chamadas concorrentes)
+        self._vexa_active = False
         platform = self._vexa_platform
         meeting_id = self._vexa_meeting_id
+        self._vexa_platform = ""
+        self._vexa_meeting_id = ""
+
+        client = self._get_vexa_client()
 
         # Para o bot
         try:
@@ -213,56 +238,133 @@ class Pipeline:
 
         self._set_stage(PipelineStage.VEXA_FETCHING)
 
-        # Busca transcricao
-        transcript = client.get_transcript(platform, meeting_id)
+        # Busca transcricao com retry (Vexa processa async)
+        transcript = self._fetch_vexa_transcript_with_retry(client, platform, meeting_id)
+
+        if not transcript.segments:
+            log.warning("Transcricao Vexa vazia apos retries — salvando sem conteudo")
+
         vexa_json = VexaClient.segments_to_json(transcript.segments)
 
         # Calcula duracao
         start_time = transcript.start_time or datetime.now()
-        end_time = transcript.end_time or datetime.now()
-        duration = (end_time - start_time).total_seconds() if transcript.end_time else 0.0
+        if transcript.end_time:
+            duration = (transcript.end_time - start_time).total_seconds()
+        elif transcript.segments:
+            duration = max(s.end_time for s in transcript.segments)
+        else:
+            duration = 0.0
 
-        # Baixa audio se configurado
-        audio_path = None
-        if self._settings.vexa_auto_download and transcript.recordings:
-            VEXA_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
-            rec = transcript.recordings[0]
-            rec_id = rec.get("id", "")
-            media_files = rec.get("media_files", [])
-            if rec_id and media_files:
-                media_id = media_files[0].get("id", "") if isinstance(media_files[0], dict) else ""
-                if media_id:
-                    fname = start_time.strftime("%Y%m%d_%H%M%S") + "_vexa.wav"
-                    audio_path = VEXA_RECORDINGS_DIR / fname
-                    try:
-                        client.download_recording(rec_id, media_id, audio_path)
-                    except Exception as e:
-                        log.warning("Falha ao baixar audio Vexa: %s", e)
-                        audio_path = None
+        # Para gravacao local se ativa (modo hibrido)
+        local_speakers = None
+        local_mic = None
+        rec_start_time = getattr(self, '_vexa_rec_start', None)
+        if self._capture.is_recording:
+            speakers_path, mic_path, _, local_duration = self._capture.stop()
+            local_speakers = speakers_path
+            local_mic = mic_path
+            log.info("Gravacao local parada (hibrido): %.1fs", local_duration)
+            if self._auto_paused:
+                self._auto_paused = False
+                self._run_event.set()
 
         # Enfileira tarefa
-        task = self._task_queue.add_vexa_task(
-            platform=platform,
-            meeting_id=meeting_id,
-            start_time=start_time,
-            duration=duration,
-            vexa_transcript_json=vexa_json,
-            audio_path=audio_path,
-        )
+        if local_speakers and transcript.segments:
+            # Modo hibrido: audio local + nomes Vexa
+            task = self._task_queue.add_hybrid_task(
+                speakers_path=local_speakers,
+                mic_path=local_mic,
+                start_time=start_time,
+                duration=duration,
+                vexa_transcript_json=vexa_json,
+                recording_start_iso=rec_start_time.isoformat() if rec_start_time else "",
+            )
+            log.info("Tarefa hybrid enfileirada: %s", task.id)
+        elif transcript.segments:
+            # Fallback: so Vexa (sem audio local)
+            task = self._task_queue.add_vexa_task(
+                platform=platform,
+                meeting_id=meeting_id,
+                start_time=start_time,
+                duration=duration,
+                vexa_transcript_json=vexa_json,
+            )
+            log.info("Tarefa Vexa enfileirada (fallback): %s", task.id)
+        else:
+            log.warning("Nem Vexa nem local disponiveis — nenhuma tarefa criada")
+            self._set_stage(PipelineStage.IDLE)
+            return
 
-        self._vexa_active = False
-        self._vexa_platform = ""
-        self._vexa_meeting_id = ""
         self._set_stage(PipelineStage.QUEUED)
 
         if self.on_queue_change:
             self.on_queue_change()
 
-        log.info("Tarefa Vexa enfileirada: %s", task.id)
-
     @property
     def is_vexa_active(self) -> bool:
         return self._vexa_active
+
+    def _fetch_vexa_transcript_with_retry(
+        self, client, platform: str, meeting_id: str,
+        max_wait: int = 120, interval: int = 15,
+    ):
+        """Busca transcricao do Vexa com retry ate segmentos estarem prontos."""
+        deadline = time.time() + max_wait
+
+        while True:
+            transcript = client.get_transcript(platform, meeting_id)
+            if transcript.segments:
+                log.info("Transcricao Vexa pronta: %d segmentos", len(transcript.segments))
+                return transcript
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                log.warning(
+                    "Timeout aguardando transcricao Vexa (%ds) — 0 segmentos",
+                    max_wait,
+                )
+                return transcript
+
+            log.info(
+                "Transcricao Vexa ainda vazia, tentando novamente em %ds (%.0fs restantes)",
+                interval, remaining,
+            )
+            time.sleep(interval)
+
+    def _poll_vexa_status(self):
+        """Monitora status do bot Vexa e auto-encerra quando reuniao termina."""
+        POLL_INTERVAL = 30
+        TERMINAL_STATUSES = {"completed", "failed", "stopped"}
+
+        while self._vexa_active:
+            time.sleep(POLL_INTERVAL)
+            if not self._vexa_active:
+                break
+            try:
+                client = self._get_vexa_client()
+                bots = client.get_bot_status()
+                our_bot = None
+                for bot in bots:
+                    if (bot.get("platform") == self._vexa_platform and
+                            bot.get("native_meeting_id") == self._vexa_meeting_id):
+                        our_bot = bot
+                        break
+
+                if our_bot is None:
+                    log.info("Bot Vexa nao encontrado na lista — reuniao encerrada")
+                    self.stop_vexa_bot()
+                    break
+
+                status = our_bot.get("status", "")
+                log.debug("Status do bot Vexa: %s", status)
+
+                if status in TERMINAL_STATUSES:
+                    log.info("Bot Vexa em estado terminal: %s — encerrando", status)
+                    self.stop_vexa_bot()
+                    break
+
+            except Exception as e:
+                log.warning("Erro ao verificar status do bot Vexa: %s", e)
 
     # --- Processor loop ---
 
@@ -327,6 +429,8 @@ class Pipeline:
 
     def _process_task(self, task: TranscriptionTask):
         """Executa o pipeline completo para uma tarefa da fila."""
+        if task.source == "hybrid":
+            return self._process_hybrid_task(task)
         if task.source == "vexa":
             return self._process_vexa_task(task)
         if task.source == "manual":
@@ -345,6 +449,8 @@ class Pipeline:
         )
 
         vexa_segments = VexaClient.segments_from_json(task.vexa_transcript_json)
+        if not vexa_segments:
+            log.warning("Tarefa Vexa %s sem segmentos — transcricao ficara vazia", task.id)
         aligned: list[AlignedSegment] = []
         for seg in vexa_segments:
             aligned.append(AlignedSegment(
@@ -533,6 +639,170 @@ class Pipeline:
 
         if self.on_complete:
             self.on_complete(output_path)
+
+    def _process_hybrid_task(self, task: TranscriptionTask):
+        """Modo hibrido: segmentacao Vexa (falantes) + texto Whisper (qualidade)."""
+        speakers_path = Path(task.speakers_path)
+        mic_path = Path(task.mic_path)
+        start_time = datetime.fromisoformat(task.start_time)
+        duration = task.duration
+
+        if not speakers_path.exists() or not mic_path.exists():
+            raise FileNotFoundError(
+                f"Arquivos de audio nao encontrados: {speakers_path}, {mic_path}"
+            )
+
+        transcriber = self._get_transcriber()
+        engine_name = f"{transcriber.name} + Vexa"
+
+        # 1. Preprocess
+        self._set_stage(PipelineStage.PREPROCESSING)
+        self._task_queue.update_status(
+            task.id, TaskStatus.IN_PROGRESS, current_stage="PREPROCESSING"
+        )
+        speakers_16k = prepare_for_transcription(speakers_path)
+        mic_16k = prepare_for_transcription(mic_path)
+
+        if not self._check_pause(task.id):
+            return
+
+        # 2. Transcrever mic (usuario)
+        self._set_stage(PipelineStage.TRANSCRIBING_MIC)
+        self._task_queue.update_status(
+            task.id, TaskStatus.IN_PROGRESS, current_stage="TRANSCRIBING_MIC"
+        )
+        language = self._settings.language
+        mic_segments = transcriber.transcribe(
+            mic_16k, language=language, on_progress=self.on_progress
+        )
+
+        if not self._check_pause(task.id):
+            return
+
+        # 3. Transcrever speakers (participantes)
+        self._set_stage(PipelineStage.TRANSCRIBING_SPEAKERS)
+        self._task_queue.update_status(
+            task.id, TaskStatus.IN_PROGRESS, current_stage="TRANSCRIBING_SPEAKERS"
+        )
+        speakers_segments = transcriber.transcribe(
+            speakers_16k, language=language, on_progress=self.on_progress
+        )
+
+        # Libera VRAM
+        self._transcriber = None
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        if not self._check_pause(task.id):
+            return
+
+        # 4. Montar segmentos: VEXA como estrutura primaria
+        self._set_stage(PipelineStage.ALIGNING)
+        self._task_queue.update_status(
+            task.id, TaskStatus.IN_PROGRESS, current_stage="ALIGNING"
+        )
+
+        vexa_segments = VexaClient.segments_from_json(task.vexa_transcript_json)
+
+        # Calcular offset temporal (Vexa time -> local time)
+        rec_start = (
+            datetime.fromisoformat(task.recording_start_time)
+            if task.recording_start_time
+            else start_time
+        )
+        offset = (rec_start - start_time).total_seconds()
+
+        aligned: list[AlignedSegment] = []
+
+        # Mic -> sempre o usuario
+        user_name = self._settings.user_name or "Eu"
+        for seg in mic_segments:
+            aligned.append(AlignedSegment(
+                start=seg.start, end=seg.end,
+                speaker=user_name, text=seg.text, is_user=True,
+            ))
+
+        # Speakers -> iterar sobre VEXA (define quem fala quando)
+        for vexa_seg in vexa_segments:
+            local_start = vexa_seg.start_time - offset
+            local_end = vexa_seg.end_time - offset
+
+            # Extrair texto whisper que cai nesta janela
+            text = self._extract_whisper_text(speakers_segments, local_start, local_end)
+            if not text.strip():
+                text = vexa_seg.text  # fallback: usar texto do Vexa
+
+            aligned.append(AlignedSegment(
+                start=max(0.0, local_start), end=max(0.0, local_end),
+                speaker=vexa_seg.speaker, text=text, is_user=False,
+            ))
+
+        aligned.sort(key=lambda s: s.start)
+
+        if not self._check_pause(task.id):
+            return
+
+        # 5. Formatar e salvar
+        self._set_stage(PipelineStage.FORMATTING)
+        self._task_queue.update_status(
+            task.id, TaskStatus.IN_PROGRESS, current_stage="FORMATTING"
+        )
+        output_dir = Path(self._settings.transcription_output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        filename = start_time.strftime("%Y%m%d-%H%M") + ".md"
+        output_path = output_dir / filename
+
+        markdown = to_markdown(aligned, start_time, duration, engine_name)
+        output_path.write_text(markdown, encoding="utf-8")
+
+        self._rec_logger.log_transcription(filename, engine_name)
+        log.info("Transcricao hybrid salva: %s", output_path)
+
+        # Limpeza
+        self._set_stage(PipelineStage.CLEANING)
+        self._task_queue.update_status(
+            task.id, TaskStatus.IN_PROGRESS, current_stage="CLEANING"
+        )
+        if self._settings.auto_delete_audio:
+            for f in [speakers_path, mic_path, speakers_16k, mic_16k]:
+                if f.exists():
+                    f.unlink()
+            self._rec_logger.log_audio_deleted(speakers_path.name)
+
+        # Concluido
+        self._task_queue.update_status(
+            task.id, TaskStatus.COMPLETED,
+            output_path=str(output_path), current_stage="COMPLETE",
+        )
+        self._set_stage(PipelineStage.COMPLETE)
+
+        if self.on_complete:
+            self.on_complete(output_path)
+
+    @staticmethod
+    def _extract_whisper_text(
+        whisper_segments: list[TranscriptionSegment],
+        start: float, end: float,
+    ) -> str:
+        """Extrai texto whisper que cai dentro de uma janela temporal Vexa."""
+        texts = []
+        for seg in whisper_segments:
+            overlap_start = max(start, seg.start)
+            overlap_end = min(end, seg.end)
+            overlap = overlap_end - overlap_start
+            if overlap <= 0:
+                continue
+            seg_duration = seg.end - seg.start
+            if seg_duration <= 0:
+                continue
+            # Inclui se mais da metade do segmento whisper cai nesta janela
+            if overlap / seg_duration >= 0.5:
+                texts.append(seg.text.strip())
+        return " ".join(texts)
 
     def _process_loopback_task(self, task: TranscriptionTask):
         """Executa o pipeline completo para uma tarefa de gravacao loopback."""

@@ -36,10 +36,11 @@ class TranscriptionTask:
     current_stage: str = ""
     retry_count: int = 0
     # Vexa fields
-    source: str = "loopback"          # "loopback" ou "vexa"
+    source: str = "loopback"          # "loopback", "vexa", "hybrid" ou "manual"
     vexa_meeting_id: str = ""
     vexa_platform: str = ""
     vexa_transcript_json: str = ""    # JSON serializado dos segmentos do Vexa
+    recording_start_time: str = ""   # ISO format, para alinhamento hybrid
 
     def __post_init__(self):
         if not self.created_at:
@@ -125,6 +126,32 @@ class TaskQueue:
         log.info("Tarefa Vexa adicionada: %s (%s/%s)", task.id, platform, meeting_id)
         return task
 
+    def add_hybrid_task(
+        self,
+        speakers_path: Path,
+        mic_path: Path,
+        start_time: datetime,
+        duration: float,
+        vexa_transcript_json: str,
+        recording_start_iso: str = "",
+    ) -> TranscriptionTask:
+        """Adiciona tarefa hibrida: audio local + segmentos Vexa."""
+        task = TranscriptionTask(
+            id=uuid.uuid4().hex[:12],
+            speakers_path=str(speakers_path),
+            mic_path=str(mic_path),
+            start_time=start_time.isoformat(),
+            duration=duration,
+            source="hybrid",
+            vexa_transcript_json=vexa_transcript_json,
+            recording_start_time=recording_start_iso,
+        )
+        with self._lock:
+            self._tasks.append(task)
+            self._save()
+        log.info("Tarefa hybrid adicionada: %s (%.0fs)", task.id, duration)
+        return task
+
     def add_manual_task(
         self,
         audio_path: Path,
@@ -201,6 +228,15 @@ class TaskQueue:
                     # Tarefas Vexa com transcricao ja pronta nao precisam de audio
                     if t.source == "vexa" and t.vexa_transcript_json:
                         continue
+                    # Tarefas hybrid precisam dos arquivos de audio
+                    if t.source == "hybrid":
+                        if (not t.speakers_path or not Path(t.speakers_path).exists() or
+                                not t.mic_path or not Path(t.mic_path).exists()):
+                            missing.append(t.id)
+                            t.status = TaskStatus.FAILED.value
+                            t.error = "Arquivos de audio nao encontrados (hybrid)"
+                            t.updated_at = datetime.now().isoformat()
+                        continue
                     # Tarefas manuais so precisam do speakers_path
                     if t.source == "manual":
                         if not t.speakers_path or not Path(t.speakers_path).exists():
@@ -276,7 +312,8 @@ class TaskQueue:
                 emoji = status_emoji.get(t.status, "\u2753")
                 dt = t.start_time[:16].replace("T", " ")
                 dur_min = t.duration / 60
-                source_tag = " [Vexa]" if t.source == "vexa" else ""
+                source_tags = {"vexa": " [Vexa]", "hybrid": " [Hybrid]", "manual": " [Manual]"}
+                source_tag = source_tags.get(t.source, "")
                 stage = f" \u2014 {t.current_stage}" if t.current_stage else ""
                 error = f" \u2014 Erro: {t.error}" if t.error else ""
                 output = f" \u2014 [{Path(t.output_path).name}]" if t.output_path else ""

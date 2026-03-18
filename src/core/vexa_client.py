@@ -12,7 +12,7 @@ import requests
 
 log = logging.getLogger(__name__)
 
-VEXA_DEFAULT_URL = "https://api.vexa.ai"
+VEXA_DEFAULT_URL = "https://api.cloud.vexa.ai"
 
 
 @dataclass
@@ -33,7 +33,6 @@ class VexaTranscript:
     start_time: datetime | None
     end_time: datetime | None
     segments: list[VexaSegment]
-    recordings: list[dict]
 
 
 class VexaClient:
@@ -132,10 +131,10 @@ class VexaClient:
         segments = []
         for seg in data.get("segments", []):
             segments.append(VexaSegment(
-                start_time=seg.get("start_time", 0.0),
-                end_time=seg.get("end_time", 0.0),
+                start_time=seg.get("start", 0.0),
+                end_time=seg.get("end", 0.0),
                 text=seg.get("text", ""),
-                speaker=seg.get("speaker", "Desconhecido"),
+                speaker=seg.get("speaker") or "Desconhecido",
                 language=seg.get("language", ""),
             ))
 
@@ -167,49 +166,7 @@ class VexaClient:
             start_time=start_time,
             end_time=end_time,
             segments=segments,
-            recordings=data.get("recordings", []),
         )
-
-    # --- Recordings ---
-
-    def list_recordings(self) -> list[dict]:
-        """Lista todas as gravacoes disponivel."""
-        resp = requests.get(
-            self._url("/recordings"),
-            headers=self._headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def download_recording(
-        self,
-        recording_id: str,
-        media_file_id: str,
-        output_path: Path,
-    ) -> Path:
-        """Baixa um arquivo de audio do Vexa.
-
-        Returns:
-            Caminho do arquivo baixado.
-        """
-        log.info("Baixando gravacao: %s/%s", recording_id, media_file_id)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        resp = requests.get(
-            self._url(f"/recordings/{recording_id}/media/{media_file_id}/raw"),
-            headers=self._headers,
-            stream=True,
-            timeout=300,
-        )
-        resp.raise_for_status()
-
-        with open(output_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-        log.info("Gravacao salva: %s (%.1f MB)", output_path, output_path.stat().st_size / 1e6)
-        return output_path
 
     # --- Serialization helpers ---
 

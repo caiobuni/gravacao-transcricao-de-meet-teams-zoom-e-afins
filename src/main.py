@@ -47,6 +47,9 @@ def main():
     from src.utils.startup import set_startup
     set_startup(settings.start_with_windows)
 
+    from src.gui.tk_root import start as start_tk
+    start_tk()
+
     app = TrayApp(settings)
 
     try:

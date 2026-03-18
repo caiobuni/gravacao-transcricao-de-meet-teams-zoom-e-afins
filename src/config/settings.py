@@ -38,7 +38,7 @@ class Settings:
 
     # Vexa
     vexa_api_key: str = ""
-    vexa_base_url: str = "https://api.vexa.ai"
+    vexa_base_url: str = "https://api.cloud.vexa.ai"
     vexa_bot_name: str = "Caio: bot de transcrição"
     vexa_bot_image: str = "📝"
     vexa_auto_download: bool = True
