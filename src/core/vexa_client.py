@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -113,7 +113,12 @@ class VexaClient:
             timeout=15,
         )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if not isinstance(data, list):
+            raise ValueError(
+                f"API /bots/status retornou {type(data).__name__} ao inves de lista"
+            )
+        return data
 
     # --- Transcripts ---
 
@@ -142,16 +147,22 @@ class VexaClient:
         end_time = None
         if data.get("start_time"):
             try:
-                start_time = datetime.fromisoformat(
+                dt = datetime.fromisoformat(
                     data["start_time"].replace("Z", "+00:00")
                 )
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                start_time = dt.astimezone().replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
         if data.get("end_time"):
             try:
-                end_time = datetime.fromisoformat(
+                dt = datetime.fromisoformat(
                     data["end_time"].replace("Z", "+00:00")
                 )
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                end_time = dt.astimezone().replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
 

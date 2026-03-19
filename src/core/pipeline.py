@@ -79,6 +79,10 @@ class Pipeline:
         self._vexa_platform: str = ""
         self._vexa_meeting_id: str = ""
         self._vexa_active = False
+        self._vexa_poll_thread: threading.Thread | None = None
+        self._rec_speakers: Path | None = None
+        self._rec_mic: Path | None = None
+        self._vexa_rec_start: datetime | None = None
 
         # Processor loop control
         self._processor_stop = threading.Event()
@@ -204,13 +208,30 @@ class Pipeline:
                 self._auto_paused = True
                 self._run_event.clear()
                 log.info("Processamento auto-pausado para gravacao hibrida")
-            speakers_path, mic_path = self._capture.start()
-            self._rec_speakers = speakers_path
-            self._rec_mic = mic_path
-            self._vexa_rec_start = datetime.now()
-            log.info("Gravacao local iniciada junto com Vexa: %s", speakers_path)
 
-        # Inicia polling de status do bot
+            for attempt in range(1, 4):
+                try:
+                    speakers_path, mic_path = self._capture.start()
+                    self._rec_speakers = speakers_path
+                    self._rec_mic = mic_path
+                    self._vexa_rec_start = datetime.now()
+                    log.info("Gravacao local iniciada junto com Vexa: %s", speakers_path)
+                    break
+                except Exception as e:
+                    log.warning("Tentativa %d/3 de iniciar gravacao falhou: %s", attempt, e)
+                    if attempt < 3:
+                        self._capture.reset()
+                        time.sleep(2)
+            else:
+                log.error(
+                    "Gravacao local NAO iniciada apos 3 tentativas — "
+                    "modo hibrido indisponivel, so Vexa"
+                )
+                if self._auto_paused:
+                    self._auto_paused = False
+                    self._run_event.set()
+
+        # Inicia polling de status do bot (sempre, mesmo se gravacao falhou)
         self._vexa_poll_thread = threading.Thread(
             target=self._poll_vexa_status, daemon=True, name="vexa-poll"
         )
@@ -258,7 +279,7 @@ class Pipeline:
         # Para gravacao local se ativa (modo hibrido)
         local_speakers = None
         local_mic = None
-        rec_start_time = getattr(self, '_vexa_rec_start', None)
+        rec_start_time = self._vexa_rec_start
         if self._capture.is_recording:
             speakers_path, mic_path, _, local_duration = self._capture.stop()
             local_speakers = speakers_path
@@ -267,6 +288,21 @@ class Pipeline:
             if self._auto_paused:
                 self._auto_paused = False
                 self._run_event.set()
+        elif self._rec_speakers:
+            # Gravacao ja parada — usar paths armazenados se arquivos existem
+            sp = Path(self._rec_speakers)
+            mp = Path(self._rec_mic) if self._rec_mic else None
+            if sp.exists():
+                local_speakers = sp
+                local_mic = mp if mp and mp.exists() else None
+                log.info("Usando audio local ja gravado: %s", sp)
+            else:
+                log.warning("Audio local nao encontrado: %s", sp)
+
+        log.info(
+            "Decisao de tarefa: local_speakers=%s, vexa_segments=%d",
+            local_speakers, len(transcript.segments),
+        )
 
         # Enfileira tarefa
         if local_speakers and transcript.segments:
@@ -289,11 +325,16 @@ class Pipeline:
                 duration=duration,
                 vexa_transcript_json=vexa_json,
             )
-            log.info("Tarefa Vexa enfileirada (fallback): %s", task.id)
+            log.info("Tarefa Vexa enfileirada (fallback sem audio local): %s", task.id)
         else:
             log.warning("Nem Vexa nem local disponiveis — nenhuma tarefa criada")
             self._set_stage(PipelineStage.IDLE)
             return
+
+        # Limpar estado de gravacao
+        self._rec_speakers = None
+        self._rec_mic = None
+        self._vexa_rec_start = None
 
         self._set_stage(PipelineStage.QUEUED)
 
@@ -333,8 +374,9 @@ class Pipeline:
 
     def _poll_vexa_status(self):
         """Monitora status do bot Vexa e auto-encerra quando reuniao termina."""
-        POLL_INTERVAL = 30
+        POLL_INTERVAL = 15
         TERMINAL_STATUSES = {"completed", "failed", "stopped"}
+        log.info("Polling de status Vexa iniciado (intervalo: %ds)", POLL_INTERVAL)
 
         while self._vexa_active:
             time.sleep(POLL_INTERVAL)
@@ -356,7 +398,7 @@ class Pipeline:
                     break
 
                 status = our_bot.get("status", "")
-                log.debug("Status do bot Vexa: %s", status)
+                log.info("Status do bot Vexa: %s", status)
 
                 if status in TERMINAL_STATUSES:
                     log.info("Bot Vexa em estado terminal: %s — encerrando", status)
@@ -488,25 +530,37 @@ class Pipeline:
         if self.on_complete:
             self.on_complete(output_path)
 
-    def enqueue_manual_transcription(self, audio_path: Path) -> TranscriptionTask:
-        """Enfileira um arquivo de audio para transcricao local com whisper + pyannote."""
-        if not audio_path.exists():
-            raise FileNotFoundError(f"Arquivo nao encontrado: {audio_path}")
+    def enqueue_manual_transcription(
+        self, speakers_path: Path, mic_path: Path | None = None,
+    ) -> TranscriptionTask:
+        """Enfileira audio para transcricao. Dual-track se mic_path fornecido."""
+        if not speakers_path.exists():
+            raise FileNotFoundError(f"Arquivo nao encontrado: {speakers_path}")
 
         import wave
         try:
-            with wave.open(str(audio_path), "rb") as wf:
+            with wave.open(str(speakers_path), "rb") as wf:
                 duration = wf.getnframes() / wf.getframerate()
         except Exception:
             duration = 0.0
 
-        start_time = datetime.fromtimestamp(audio_path.stat().st_mtime)
-        task = self._task_queue.add_manual_task(audio_path, start_time, duration)
+        start_time = datetime.fromtimestamp(speakers_path.stat().st_mtime)
+
+        if mic_path and mic_path.exists():
+            # Dual-track: usa o mesmo fluxo do loopback
+            task = self._task_queue.add_manual_task(
+                speakers_path, start_time, duration, mic_path=mic_path,
+            )
+            log.info("Transcricao dual-track enfileirada: %s + %s",
+                     speakers_path.name, mic_path.name)
+        else:
+            # Single-track: whisper + pyannote
+            task = self._task_queue.add_manual_task(speakers_path, start_time, duration)
+            log.info("Transcricao single-track enfileirada: %s", speakers_path.name)
 
         if self.on_queue_change:
             self.on_queue_change()
 
-        log.info("Transcricao manual enfileirada: %s", audio_path.name)
         return task
 
     def _process_manual_task(self, task: TranscriptionTask):
@@ -718,16 +772,24 @@ class Pipeline:
 
         aligned: list[AlignedSegment] = []
 
-        # Mic -> sempre o usuario
-        user_name = self._settings.user_name or "Eu"
+        # Identificar qual speaker Vexa corresponde ao usuario do mic
+        vexa_user = self._identify_vexa_user(mic_segments, vexa_segments)
+        if vexa_user:
+            log.info("Speaker Vexa do usuario detectado: %s", vexa_user)
+
+        # Mic -> usuario (com nome real Vexa se detectado)
+        user_label = vexa_user or self._settings.user_name or "Eu"
         for seg in mic_segments:
             aligned.append(AlignedSegment(
                 start=seg.start, end=seg.end,
-                speaker=user_name, text=seg.text, is_user=True,
+                speaker=user_label, text=seg.text, is_user=True,
             ))
 
-        # Speakers -> iterar sobre VEXA (define quem fala quando)
+        # Speakers -> iterar sobre VEXA (pular segmentos do usuario, mic ja capturou)
         for vexa_seg in vexa_segments:
+            if vexa_user and vexa_seg.speaker == vexa_user:
+                continue
+
             local_start = vexa_seg.start_time - offset
             local_end = vexa_seg.end_time - offset
 
@@ -803,6 +865,37 @@ class Pipeline:
             if overlap / seg_duration >= 0.5:
                 texts.append(seg.text.strip())
         return " ".join(texts)
+
+    @staticmethod
+    def _identify_vexa_user(
+        mic_segments: list[TranscriptionSegment],
+        vexa_segments: list,
+    ) -> str | None:
+        """Identifica qual speaker Vexa corresponde ao usuario do mic via overlap de palavras."""
+        mic_words: set[str] = set()
+        for seg in mic_segments:
+            mic_words.update(w.lower() for w in seg.text.split() if len(w) > 2)
+
+        if not mic_words:
+            return None
+
+        speakers: dict[str, set[str]] = {}
+        for seg in vexa_segments:
+            speakers.setdefault(seg.speaker, set()).update(
+                w.lower() for w in seg.text.split() if len(w) > 2
+            )
+
+        best_speaker = None
+        best_ratio = 0.0
+        for speaker, words in speakers.items():
+            if not words:
+                continue
+            overlap = len(mic_words & words) / len(words)
+            if overlap > best_ratio and overlap > 0.3:
+                best_ratio = overlap
+                best_speaker = speaker
+
+        return best_speaker
 
     def _process_loopback_task(self, task: TranscriptionTask):
         """Executa o pipeline completo para uma tarefa de gravacao loopback."""

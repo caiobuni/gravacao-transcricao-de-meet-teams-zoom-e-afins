@@ -303,6 +303,7 @@ class TrayApp:
         """Start the system tray application."""
         if self._settings.auto_detect_meet:
             self._process_monitor.start()
+            self._sound_detector.start()
 
         self._icon = pystray.Icon(
             name="gravacao-transcricao",

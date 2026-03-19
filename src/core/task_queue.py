@@ -157,20 +157,22 @@ class TaskQueue:
         audio_path: Path,
         start_time: datetime,
         duration: float,
+        mic_path: Path | None = None,
     ) -> TranscriptionTask:
-        """Adiciona tarefa de transcricao manual (single-track)."""
+        """Adiciona tarefa de transcricao manual. Dual-track se mic_path fornecido."""
+        source = "loopback" if mic_path else "manual"
         task = TranscriptionTask(
             id=uuid.uuid4().hex[:12],
             speakers_path=str(audio_path),
-            mic_path="",
+            mic_path=str(mic_path) if mic_path else "",
             start_time=start_time.isoformat(),
             duration=duration,
-            source="manual",
+            source=source,
         )
         with self._lock:
             self._tasks.append(task)
             self._save()
-        log.info("Tarefa manual adicionada: %s (%s)", task.id, audio_path.name)
+        log.info("Tarefa %s adicionada: %s (%s)", source, task.id, audio_path.name)
         return task
 
     def get_next_pending(self) -> TranscriptionTask | None:

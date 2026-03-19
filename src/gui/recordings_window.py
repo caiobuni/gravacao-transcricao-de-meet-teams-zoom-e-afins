@@ -1,13 +1,17 @@
 """Janela para listar e selecionar gravacoes anteriores para transcricao local."""
 
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
 import customtkinter as ctk
 
-from src.config.constants import RECORDINGS_DIR, VEXA_RECORDINGS_DIR
+from src.config.constants import (
+    MIC_SUFFIX,
+    RECORDINGS_DIR,
+    SPEAKERS_SUFFIX,
+    VEXA_RECORDINGS_DIR,
+)
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +20,8 @@ class RecordingsWindow:
     def __init__(self, on_transcribe: callable):
         """
         Args:
-            on_transcribe: callback(audio_path: Path) chamado ao clicar Transcrever.
+            on_transcribe: callback(speakers_path: Path, mic_path: Path | None)
+                           chamado ao clicar Transcrever.
         """
         self._on_transcribe = on_transcribe
         self._window: ctk.CTkToplevel | None = None
@@ -29,7 +34,7 @@ class RecordingsWindow:
 
         self._window = ctk.CTkToplevel()
         self._window.title("Gravacoes anteriores")
-        self._window.geometry("600x450")
+        self._window.geometry("650x450")
         self._window.resizable(False, True)
 
         self._window.grid_columnconfigure(0, weight=1)
@@ -38,7 +43,7 @@ class RecordingsWindow:
         # Header
         ctk.CTkLabel(
             self._window,
-            text="Selecione um audio para transcrever com whisper + pyannote:",
+            text="Selecione uma gravacao para transcrever:",
             font=ctk.CTkFont(size=13),
         ).grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
 
@@ -64,32 +69,99 @@ class RecordingsWindow:
         self._refresh()
 
     def _scan_recordings(self) -> list[dict]:
-        """Escaneia diretorios de gravacoes e retorna lista de arquivos."""
-        files = []
+        """Escaneia diretorios e agrupa pares dual-track (speakers + mic)."""
+        # Coleta todos os .wav
+        raw_files: list[tuple[Path, str]] = []
         for search_dir, origin in [(RECORDINGS_DIR, "local"), (VEXA_RECORDINGS_DIR, "vexa")]:
             if not search_dir.exists():
                 continue
             for wav in search_dir.glob("*.wav"):
-                try:
-                    size = wav.stat().st_size
-                    mtime = wav.stat().st_mtime
-                except OSError:
-                    continue
-                files.append({
-                    "path": wav,
-                    "name": wav.name,
-                    "origin": origin,
-                    "size_mb": size / 1e6,
-                    "mtime": mtime,
-                    "date_str": datetime.fromtimestamp(mtime).strftime("%d/%m/%Y %H:%M"),
-                })
+                raw_files.append((wav, origin))
 
-        files.sort(key=lambda f: f["mtime"], reverse=True)
-        return files
+        # Agrupa por prefixo de timestamp
+        groups: dict[str, dict] = {}
+        for wav, origin in raw_files:
+            stem = wav.stem  # ex: 20260318_153045_speakers
+            key = stem
+            track_type = "solo"
+
+            if stem.endswith(SPEAKERS_SUFFIX):
+                key = stem[: -len(SPEAKERS_SUFFIX)]
+                track_type = "speakers"
+            elif stem.endswith(MIC_SUFFIX):
+                key = stem[: -len(MIC_SUFFIX)]
+                track_type = "mic"
+
+            group_key = f"{wav.parent}|{key}"
+            if group_key not in groups:
+                groups[group_key] = {
+                    "key": key,
+                    "dir": wav.parent,
+                    "origin": origin,
+                    "speakers_path": None,
+                    "mic_path": None,
+                    "solo_path": None,
+                    "total_size": 0,
+                    "mtime": 0.0,
+                }
+
+            try:
+                size = wav.stat().st_size
+                mtime = wav.stat().st_mtime
+            except OSError:
+                continue
+
+            g = groups[group_key]
+            g["total_size"] += size
+            g["mtime"] = max(g["mtime"], mtime)
+
+            if track_type == "speakers":
+                g["speakers_path"] = wav
+            elif track_type == "mic":
+                g["mic_path"] = wav
+            else:
+                g["solo_path"] = wav
+
+        # Converte para lista
+        result = []
+        for g in groups.values():
+            speakers = g["speakers_path"]
+            mic = g["mic_path"]
+            solo = g["solo_path"]
+
+            if speakers:
+                # Par dual-track (ou so speakers sem mic)
+                tracks = "speakers + mic" if mic else "speakers"
+                label_name = g["key"]
+            elif solo:
+                # Arquivo solo (sem sufixo _speakers/_mic)
+                speakers = solo
+                mic = None
+                tracks = "solo"
+                label_name = solo.stem
+            else:
+                # So mic sem speakers — improvavel mas tratamos
+                speakers = mic
+                mic = None
+                tracks = "mic"
+                label_name = g["key"]
+
+            result.append({
+                "speakers_path": speakers,
+                "mic_path": mic,
+                "origin": g["origin"],
+                "size_mb": g["total_size"] / 1e6,
+                "mtime": g["mtime"],
+                "date_str": datetime.fromtimestamp(g["mtime"]).strftime("%d/%m/%Y %H:%M"),
+                "tracks": tracks,
+                "label_name": label_name,
+            })
+
+        result.sort(key=lambda f: f["mtime"], reverse=True)
+        return result
 
     def _refresh(self):
         """Atualiza a lista de gravacoes."""
-        # Clear existing widgets
         for widget in self._list_frame.winfo_children():
             widget.destroy()
 
@@ -106,7 +178,11 @@ class RecordingsWindow:
 
         for i, rec in enumerate(self._recordings):
             origin_tag = "[Vexa]" if rec["origin"] == "vexa" else "[Local]"
-            label_text = f"{rec['date_str']}  |  {rec['size_mb']:.1f} MB  |  {origin_tag}  |  {rec['name']}"
+            tracks_tag = f"[{rec['tracks']}]"
+            label_text = (
+                f"{rec['date_str']}  |  {rec['size_mb']:.1f} MB  |  "
+                f"{origin_tag} {tracks_tag}  |  {rec['label_name']}"
+            )
 
             rb = ctk.CTkRadioButton(
                 self._list_frame,
@@ -131,11 +207,15 @@ class RecordingsWindow:
             return
 
         rec = self._recordings[idx]
-        audio_path = rec["path"]
-        log.info("Transcricao manual solicitada: %s", audio_path)
+        speakers_path = rec["speakers_path"]
+        mic_path = rec["mic_path"]
+        log.info(
+            "Transcricao manual solicitada: speakers=%s, mic=%s",
+            speakers_path, mic_path,
+        )
 
         try:
-            self._on_transcribe(audio_path)
+            self._on_transcribe(speakers_path, mic_path)
         except Exception as e:
             log.error("Erro ao enfileirar transcricao: %s", e)
 
