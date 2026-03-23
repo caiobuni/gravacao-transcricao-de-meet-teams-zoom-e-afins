@@ -326,6 +326,16 @@ class Pipeline:
                 vexa_transcript_json=vexa_json,
             )
             log.info("Tarefa Vexa enfileirada (fallback sem audio local): %s", task.id)
+        elif local_speakers:
+            # Fallback: audio local sem Vexa (processar como loopback)
+            local_duration = duration
+            if rec_start_time:
+                local_duration = (datetime.now() - rec_start_time).total_seconds()
+            task = self._task_queue.add_task(
+                local_speakers, local_mic,
+                rec_start_time or start_time, local_duration,
+            )
+            log.info("Tarefa loopback enfileirada (Vexa falhou): %s", task.id)
         else:
             log.warning("Nem Vexa nem local disponiveis — nenhuma tarefa criada")
             self._set_stage(PipelineStage.IDLE)
@@ -350,10 +360,27 @@ class Pipeline:
         max_wait: int = 120, interval: int = 15,
     ):
         """Busca transcricao do Vexa com retry ate segmentos estarem prontos."""
+        from src.core.vexa_client import VexaTranscript
+
         deadline = time.time() + max_wait
+        empty = VexaTranscript(
+            meeting_id=meeting_id, platform=platform,
+            start_time=None, end_time=None, segments=[],
+        )
 
         while True:
-            transcript = client.get_transcript(platform, meeting_id)
+            try:
+                transcript = client.get_transcript(platform, meeting_id)
+            except Exception as e:
+                log.warning("Erro ao buscar transcricao Vexa: %s", e)
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    log.warning("Timeout apos erro — retornando vazio")
+                    return empty
+                log.info("Tentando novamente em %ds (%.0fs restantes)", interval, remaining)
+                time.sleep(interval)
+                continue
+
             if transcript.segments:
                 log.info("Transcricao Vexa pronta: %d segmentos", len(transcript.segments))
                 return transcript
@@ -393,7 +420,10 @@ class Pipeline:
                         break
 
                 if our_bot is None:
-                    log.info("Bot Vexa nao encontrado na lista — reuniao encerrada")
+                    log.info(
+                        "Bot Vexa nao encontrado na lista (%d bots retornados) — reuniao encerrada",
+                        len(bots),
+                    )
                     self.stop_vexa_bot()
                     break
 
@@ -439,12 +469,18 @@ class Pipeline:
                 self._rec_logger.log_audio_kept(
                     Path(task.speakers_path).name, f"falha: {e}"
                 )
-                if self.on_error:
-                    self.on_error(str(e))
+                try:
+                    if self.on_error:
+                        self.on_error(str(e))
+                except Exception:
+                    log.error("Erro no callback on_error", exc_info=True)
             finally:
                 self._current_task_id = None
-                if self.on_queue_change:
-                    self.on_queue_change()
+                try:
+                    if self.on_queue_change:
+                        self.on_queue_change()
+                except Exception:
+                    log.error("Erro no callback on_queue_change", exc_info=True)
 
             if not self._task_queue.has_pending_work():
                 self._set_stage(PipelineStage.IDLE)
@@ -608,27 +644,30 @@ class Pipeline:
         except Exception:
             pass
 
-        # Diarize
-        self._set_stage(PipelineStage.DIARIZING)
-        self._task_queue.update_status(
-            task.id, TaskStatus.IN_PROGRESS, current_stage="DIARIZING"
-        )
+        # Diarize (pular se silencioso — evita OOM na GPU)
         diarization = []
-        try:
-            if not self._diarizer:
-                self._diarizer = Diarizer()
-            if self._diarizer.is_available():
-                diarization = self._diarizer.diarize(audio_16k)
-        except Exception as e:
-            log.warning("Diarizacao falhou: %s", e)
-        finally:
-            self._diarizer = None
+        if not speakers_segments:
+            log.info("Audio silencioso (0 segmentos) — pulando diarizacao")
+        else:
+            self._set_stage(PipelineStage.DIARIZING)
+            self._task_queue.update_status(
+                task.id, TaskStatus.IN_PROGRESS, current_stage="DIARIZING"
+            )
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
+                if not self._diarizer:
+                    self._diarizer = Diarizer()
+                if self._diarizer.is_available():
+                    diarization = self._diarizer.diarize(audio_16k)
+            except Exception as e:
+                log.warning("Diarizacao falhou: %s", e)
+            finally:
+                self._diarizer = None
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
         if not self._check_pause(task.id):
             return
@@ -958,28 +997,31 @@ class Pipeline:
         except Exception:
             pass
 
-        # Diarize speakers track
-        self._set_stage(PipelineStage.DIARIZING)
-        self._task_queue.update_status(
-            task.id, TaskStatus.IN_PROGRESS, current_stage="DIARIZING"
-        )
+        # Diarize speakers track (pular se silencioso — evita OOM na GPU)
         diarization = []
-        try:
-            if not self._diarizer:
-                self._diarizer = Diarizer()
-            if self._diarizer.is_available():
-                diarization = self._diarizer.diarize(speakers_16k)
-        except Exception as e:
-            log.warning("Diarizacao falhou: %s", e)
-        finally:
-            # Free diarizer GPU memory
-            self._diarizer = None
+        if not speakers_segments:
+            log.info("Speakers track silencioso (0 segmentos) — pulando diarizacao")
+        else:
+            self._set_stage(PipelineStage.DIARIZING)
+            self._task_queue.update_status(
+                task.id, TaskStatus.IN_PROGRESS, current_stage="DIARIZING"
+            )
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
+                if not self._diarizer:
+                    self._diarizer = Diarizer()
+                if self._diarizer.is_available():
+                    diarization = self._diarizer.diarize(speakers_16k)
+            except Exception as e:
+                log.warning("Diarizacao falhou: %s", e)
+            finally:
+                # Free diarizer GPU memory
+                self._diarizer = None
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
         if not self._check_pause(task.id):
             return

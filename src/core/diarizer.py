@@ -50,8 +50,11 @@ class Diarizer:
         )
 
         if torch.cuda.is_available():
-            logger.info("GPU detectada, movendo pipeline para CUDA.")
-            self._pipeline.to(torch.device("cuda"))
+            try:
+                logger.info("GPU detectada, movendo pipeline para CUDA.")
+                self._pipeline.to(torch.device("cuda"))
+            except Exception:
+                logger.warning("Falha ao mover para GPU, usando CPU", exc_info=True)
         else:
             logger.info("GPU não disponível, usando CPU.")
 

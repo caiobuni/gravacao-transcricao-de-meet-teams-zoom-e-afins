@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 # Ensure project root is in path
@@ -39,6 +40,17 @@ def main():
     setup_logging()
     ensure_dirs()
     log = logging.getLogger(__name__)
+
+    # Log crashes em daemon threads (normalmente silenciosos)
+    def _thread_excepthook(args):
+        log.critical(
+            "Thread '%s' crashed:",
+            args.thread.name if args.thread else "<unknown>",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _thread_excepthook
+
     log.info("Iniciando Gravacao e Transcricao v0.1.0")
 
     settings = Settings.load()

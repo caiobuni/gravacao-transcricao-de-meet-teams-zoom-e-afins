@@ -281,23 +281,31 @@ class TrayApp:
     def _on_meet_closed(self):
         """Meet fechado — para gravacao/bot Vexa (modo hibrido para ambos)."""
         log.info("Google Meet encerrado — verificando gravacao ativa")
-        if self._pipeline.is_vexa_active:
-            # Modo hibrido: stop_vexa_bot() ja para a gravacao local tambem
-            threading.Thread(target=self._pipeline.stop_vexa_bot, daemon=True).start()
-        elif self._pipeline.is_recording:
-            self._pipeline.stop_recording()
+        try:
+            if self._pipeline.is_vexa_active:
+                threading.Thread(target=self._pipeline.stop_vexa_bot, daemon=True).start()
+            elif self._pipeline.is_recording:
+                self._pipeline.stop_recording()
+        except Exception:
+            log.error("Erro ao tratar fechamento do Meet", exc_info=True)
 
     def _on_meeting_joined(self):
         log.info("Reuniao iniciada (som detectado) — iniciando gravacao")
-        if not self._pipeline.is_recording:
-            self._pipeline.start_recording(trigger="meet_auto")
+        try:
+            if not self._pipeline.is_recording:
+                self._pipeline.start_recording(trigger="meet_auto")
+        except Exception:
+            log.error("Erro ao iniciar gravacao automatica", exc_info=True)
 
     def _on_meeting_left(self):
         log.info("Reuniao encerrada (som detectado) — parando gravacao")
-        if self._pipeline.is_vexa_active:
-            threading.Thread(target=self._pipeline.stop_vexa_bot, daemon=True).start()
-        elif self._pipeline.is_recording:
-            self._pipeline.stop_recording()
+        try:
+            if self._pipeline.is_vexa_active:
+                threading.Thread(target=self._pipeline.stop_vexa_bot, daemon=True).start()
+            elif self._pipeline.is_recording:
+                self._pipeline.stop_recording()
+        except Exception:
+            log.error("Erro ao tratar saida da reuniao", exc_info=True)
 
     def run(self):
         """Start the system tray application."""

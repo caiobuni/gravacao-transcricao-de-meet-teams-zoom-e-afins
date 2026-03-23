@@ -53,12 +53,18 @@ class MeetProcessMonitor:
                 self._meet_detected = True
                 log.info("Google Meet detectado")
                 if self.on_meet_opened:
-                    self.on_meet_opened()
+                    try:
+                        self.on_meet_opened()
+                    except Exception:
+                        log.error("Erro no callback on_meet_opened", exc_info=True)
             elif not is_meet_running and self._meet_detected:
                 self._meet_detected = False
                 log.info("Google Meet encerrado")
                 if self.on_meet_closed:
-                    self.on_meet_closed()
+                    try:
+                        self.on_meet_closed()
+                    except Exception:
+                        log.error("Erro no callback on_meet_closed", exc_info=True)
 
             time.sleep(self._check_interval)
 

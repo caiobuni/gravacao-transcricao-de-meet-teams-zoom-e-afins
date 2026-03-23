@@ -233,25 +233,29 @@ class DualTrackCapture:
             end_time = datetime.now()
             duration = (end_time - self._start_time).total_seconds()
 
-            # Fechar streams
-            if self._loopback_stream:
-                self._loopback_stream.stop_stream()
-                self._loopback_stream.close()
-                self._loopback_stream = None
+            # Fechar streams (cada um independente para garantir cleanup total)
+            for name, stream in [("loopback", self._loopback_stream), ("mic", self._mic_stream)]:
+                if stream:
+                    try:
+                        stream.stop_stream()
+                    except Exception:
+                        log.warning("Erro ao parar stream %s", name, exc_info=True)
+                    try:
+                        stream.close()
+                    except Exception:
+                        log.warning("Erro ao fechar stream %s", name, exc_info=True)
+            self._loopback_stream = None
+            self._mic_stream = None
 
-            if self._mic_stream:
-                self._mic_stream.stop_stream()
-                self._mic_stream.close()
-                self._mic_stream = None
-
-            # Fechar WAVs
-            if self._loopback_wave:
-                self._loopback_wave.close()
-                self._loopback_wave = None
-
-            if self._mic_wave:
-                self._mic_wave.close()
-                self._mic_wave = None
+            # Fechar WAVs (cada um independente)
+            for name, wf in [("loopback", self._loopback_wave), ("mic", self._mic_wave)]:
+                if wf:
+                    try:
+                        wf.close()
+                    except Exception:
+                        log.warning("Erro ao fechar WAV %s", name, exc_info=True)
+            self._loopback_wave = None
+            self._mic_wave = None
 
             return self._loopback_path, self._mic_path, self._start_time, duration
 
@@ -272,8 +276,14 @@ class DualTrackCapture:
     def terminate(self):
         """Libera recursos do PyAudio."""
         if self._is_recording:
-            self.stop()
-        self._pa.terminate()
+            try:
+                self.stop()
+            except Exception:
+                log.warning("Erro ao parar gravacao durante terminate", exc_info=True)
+        try:
+            self._pa.terminate()
+        except Exception:
+            log.warning("Erro ao terminar PyAudio", exc_info=True)
 
     def __del__(self):
         try:

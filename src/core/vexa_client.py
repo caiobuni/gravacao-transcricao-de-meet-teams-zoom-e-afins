@@ -114,11 +114,20 @@ class VexaClient:
         )
         resp.raise_for_status()
         data = resp.json()
-        if not isinstance(data, list):
-            raise ValueError(
-                f"API /bots/status retornou {type(data).__name__} ao inves de lista"
-            )
-        return data
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            # API pode retornar bot unico como dict
+            if "status" in data and "platform" in data:
+                return [data]
+            # Procurar qualquer chave que contenha uma lista (ex: running_bots)
+            for key, value in data.items():
+                if isinstance(value, list):
+                    log.debug("get_bot_status: usando chave '%s' (%d itens)", key, len(value))
+                    return value
+            log.warning("Formato inesperado de /bots/status: %s", list(data.keys()))
+            return []
+        return []
 
     # --- Transcripts ---
 
