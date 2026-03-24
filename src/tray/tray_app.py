@@ -158,14 +158,12 @@ class TrayApp:
         self._status_text = f"Concluido: {output_path.name}"
         self._update_icon()
         try:
-            from plyer import notification
-            notification.notify(
-                title="Transcricao Concluida",
-                message=f"Arquivo: {output_path.name}",
-                timeout=5,
+            self._icon.notify(
+                f"Arquivo: {output_path.name}",
+                "Transcricao Concluida",
             )
         except Exception:
-            pass
+            log.debug("Falha ao enviar notificacao", exc_info=True)
 
     def _on_error(self, error: str):
         self._status_text = f"Erro: {error[:50]}"

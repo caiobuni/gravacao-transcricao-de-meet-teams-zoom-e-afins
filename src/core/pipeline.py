@@ -563,8 +563,11 @@ class Pipeline:
         )
         self._set_stage(PipelineStage.COMPLETE)
 
-        if self.on_complete:
-            self.on_complete(output_path)
+        try:
+            if self.on_complete:
+                self.on_complete(output_path)
+        except Exception:
+            log.error("Erro no callback on_complete", exc_info=True)
 
     def enqueue_manual_transcription(
         self, speakers_path: Path, mic_path: Path | None = None,
@@ -719,7 +722,10 @@ class Pipeline:
 
         # Clean up temp 16k file (nao deleta o original)
         if audio_16k != audio_path and audio_16k.exists():
-            audio_16k.unlink()
+            try:
+                audio_16k.unlink()
+            except Exception:
+                log.warning("Falha ao deletar %s", audio_16k.name, exc_info=True)
 
         # Mark complete
         self._task_queue.update_status(
@@ -730,8 +736,11 @@ class Pipeline:
         )
         self._set_stage(PipelineStage.COMPLETE)
 
-        if self.on_complete:
-            self.on_complete(output_path)
+        try:
+            if self.on_complete:
+                self.on_complete(output_path)
+        except Exception:
+            log.error("Erro no callback on_complete", exc_info=True)
 
     def _process_hybrid_task(self, task: TranscriptionTask):
         """Modo hibrido: segmentacao Vexa (falantes) + texto Whisper (qualidade)."""
@@ -870,8 +879,11 @@ class Pipeline:
         )
         if self._settings.auto_delete_audio:
             for f in [speakers_path, mic_path, speakers_16k, mic_16k]:
-                if f.exists():
-                    f.unlink()
+                try:
+                    if f.exists():
+                        f.unlink()
+                except Exception:
+                    log.warning("Falha ao deletar %s", f.name, exc_info=True)
             self._rec_logger.log_audio_deleted(speakers_path.name)
 
         # Concluido
@@ -881,8 +893,11 @@ class Pipeline:
         )
         self._set_stage(PipelineStage.COMPLETE)
 
-        if self.on_complete:
-            self.on_complete(output_path)
+        try:
+            if self.on_complete:
+                self.on_complete(output_path)
+        except Exception:
+            log.error("Erro no callback on_complete", exc_info=True)
 
     @staticmethod
     def _extract_whisper_text(
@@ -1078,8 +1093,11 @@ class Pipeline:
         )
         if self._settings.auto_delete_audio:
             for f in [speakers_path, mic_path, speakers_16k, mic_16k]:
-                if f.exists():
-                    f.unlink()
+                try:
+                    if f.exists():
+                        f.unlink()
+                except Exception:
+                    log.warning("Falha ao deletar %s", f.name, exc_info=True)
             self._rec_logger.log_audio_deleted(speakers_path.name)
 
         # Mark complete
@@ -1091,8 +1109,11 @@ class Pipeline:
         )
         self._set_stage(PipelineStage.COMPLETE)
 
-        if self.on_complete:
-            self.on_complete(output_path)
+        try:
+            if self.on_complete:
+                self.on_complete(output_path)
+        except Exception:
+            log.error("Erro no callback on_complete", exc_info=True)
 
     # --- Pause / Resume ---
 

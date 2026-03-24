@@ -1,5 +1,7 @@
 """Ponto de entrada do aplicativo de gravacao e transcricao."""
 
+import atexit
+import faulthandler
 import logging
 import sys
 import threading
@@ -41,6 +43,19 @@ def main():
     ensure_dirs()
     log = logging.getLogger(__name__)
 
+    # Ativa dump de traceback C em segfaults/aborts (scipy, torch, etc.)
+    _fault_log = open(LOG_DIR / "crash.log", "a")
+    faulthandler.enable(file=_fault_log)
+
+    # Detecta shutdown inesperado (se _clean_exit nao foi setado, foi crash)
+    _clean_exit = False
+
+    def _atexit():
+        if not _clean_exit:
+            log.warning("Processo encerrado sem cleanup — possivel crash")
+
+    atexit.register(_atexit)
+
     # Log crashes em daemon threads (normalmente silenciosos)
     def _thread_excepthook(args):
         log.critical(
@@ -71,6 +86,8 @@ def main():
     except Exception as e:
         log.error(f"Erro fatal: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        _clean_exit = True
 
 
 if __name__ == "__main__":

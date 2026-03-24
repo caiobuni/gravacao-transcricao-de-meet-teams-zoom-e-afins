@@ -16,6 +16,12 @@ def prepare_for_transcription(input_path: Path, output_path: Path | None = None)
 
     data, samplerate = sf.read(str(input_path))
 
+    if len(data) == 0:
+        raise ValueError(f"Arquivo de audio vazio: {input_path}")
+
+    if samplerate <= 0:
+        raise ValueError(f"Sample rate invalido ({samplerate}): {input_path}")
+
     # Stereo → mono
     if len(data.shape) > 1 and data.shape[1] > 1:
         data = np.mean(data, axis=1)
